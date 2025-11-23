@@ -1,7 +1,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { rewriteTextForEvent, generateAnnouncerAudio, AnnouncerStyle, AnnouncerGender } from '../services/geminiService';
-import { processGeminiAudio, playBuffer, exportAudioAsWav } from '../services/audioUtils';
+import { processGeminiAudio, playBuffer, exportAudioAsWav, concatenateAudioBuffers } from '../services/audioUtils';
 import { validateInput, checkRateLimit, MAX_CHARS } from '../services/securityUtils';
 import { saveToHistory } from '../services/storageService';
 
@@ -18,6 +18,29 @@ interface UseGeminiAudioReturn {
   handleDownload: () => void;
   lastGeneratedId: string;
 }
+
+// Helper to split text into safe batches
+const splitTextIntoBatches = (text: string, maxBatchSize: number = 400): string[] => {
+  // Regex: Split by periods, exclamation, questions or newlines, keeping the delimiter.
+  const sentenceRegex = /[^.!?\n]+[.!?\n]*/g;
+  const sentences = text.match(sentenceRegex) || [text];
+  
+  const batches: string[] = [];
+  let currentBatch = "";
+  
+  for (const sentence of sentences) {
+    if ((currentBatch.length + sentence.length) > maxBatchSize) {
+      if (currentBatch.trim().length > 0) batches.push(currentBatch.trim());
+      currentBatch = sentence;
+    } else {
+      currentBatch += sentence;
+    }
+  }
+  if (currentBatch.trim().length > 0) batches.push(currentBatch.trim());
+  
+  // Fallback: If a single sentence is still huge, force split it
+  return batches.flatMap(b => b.length > maxBatchSize ? (b.match(new RegExp(`.{1,${maxBatchSize}}`, 'g')) || []) : [b]);
+};
 
 export const useGeminiAudio = (): UseGeminiAudioReturn => {
   const [inputText, setInputText] = useState('');
@@ -67,33 +90,53 @@ export const useGeminiAudio = (): UseGeminiAudioReturn => {
     audioBufferRef.current = null;
     
     try {
-      // Step 1: Semantic Analysis (Simulation delay for UX)
+      // Analyze
       setProgressStatus('analyzing');
-      await new Promise(r => setTimeout(r, 1200));
+      await new Promise(r => setTimeout(r, 500)); // Short UI delay
 
-      // Step 2: Rewrite
+      // BATCH PROCESSING LOGIC
+      const batches = splitTextIntoBatches(inputText, 400);
+      const rewrittenSegments: string[] = [];
+      const audioBuffers: AudioBuffer[] = [];
+
+      // Step 2: Rewrite Loop
       setProgressStatus('rewriting');
-      const script = await rewriteTextForEvent(inputText, style);
-      setGeneratedScript(script);
-
-      // Step 3: Synthesis
-      setProgressStatus('synthesizing');
-      const base64Audio = await generateAnnouncerAudio(script, style, gender);
+      for (const batch of batches) {
+         // Rewriting each batch independently
+         const segmentScript = await rewriteTextForEvent(batch, style);
+         rewrittenSegments.push(segmentScript);
+      }
       
-      if (!base64Audio || !audioContextRef.current) {
-        throw new Error("Fallo en la síntesis de audio.");
+      const fullScript = rewrittenSegments.join(" ");
+      setGeneratedScript(fullScript);
+
+      // Step 3: Synthesis Loop
+      setProgressStatus('synthesizing');
+      
+      if (!audioContextRef.current) throw new Error("Audio Context not initialized");
+
+      for (const segment of rewrittenSegments) {
+        const base64Audio = await generateAnnouncerAudio(segment, style, gender);
+        if (base64Audio) {
+            const buffer = await processGeminiAudio(base64Audio, audioContextRef.current);
+            audioBuffers.push(buffer);
+        }
       }
 
-      // Step 4: Mastering (Decoding)
+      if (audioBuffers.length === 0) {
+        throw new Error("No se pudo generar audio.");
+      }
+
+      // Step 4: Mastering (Concatenation)
       setProgressStatus('mastering');
-      const buffer = await processGeminiAudio(base64Audio, audioContextRef.current);
-      audioBufferRef.current = buffer;
+      const finalBuffer = concatenateAudioBuffers(audioBuffers, audioContextRef.current);
+      audioBufferRef.current = finalBuffer;
       
       // Step 5: Ready
       setProgressStatus('ready');
       
       // Save to History
-      const item = saveToHistory(inputText, script, style, gender, userName);
+      const item = saveToHistory(inputText, fullScript, style, gender, userName);
       setLastGeneratedId(item.id);
 
       // Cooldown timer

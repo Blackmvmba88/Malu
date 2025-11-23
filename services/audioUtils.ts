@@ -49,6 +49,40 @@ export async function processGeminiAudio(
 }
 
 /**
+ * Concatenates multiple AudioBuffers into a single continuous AudioBuffer.
+ */
+export function concatenateAudioBuffers(buffers: AudioBuffer[], context: AudioContext): AudioBuffer {
+  if (buffers.length === 0) {
+    return context.createBuffer(1, 1, 24000); // Return empty buffer if none
+  }
+  if (buffers.length === 1) {
+    return buffers[0];
+  }
+
+  // Calculate total length
+  const totalLength = buffers.reduce((acc, buf) => acc + buf.length, 0);
+  
+  // Create new buffer (assuming mono 24k based on Gemini defaults)
+  const output = context.createBuffer(
+    buffers[0].numberOfChannels,
+    totalLength,
+    buffers[0].sampleRate
+  );
+
+  // Merge data
+  for (let channel = 0; channel < output.numberOfChannels; channel++) {
+    const outputData = output.getChannelData(channel);
+    let offset = 0;
+    for (const buf of buffers) {
+      outputData.set(buf.getChannelData(channel), offset);
+      offset += buf.length;
+    }
+  }
+
+  return output;
+}
+
+/**
  * Plays an AudioBuffer on the given context with volume and speed control.
  * Returns the source node so it can be stopped if needed.
  */

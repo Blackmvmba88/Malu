@@ -5,7 +5,8 @@
  */
 
 // Constants for security limits
-export const MAX_CHARS = 400;
+// We increased this to 1200 to allow batching (3 batches of ~400 chars)
+export const MAX_CHARS = 1200;
 export const RATE_LIMIT_COOLDOWN_MS = 5000; // 5 seconds between requests
 
 let lastRequestTime = 0;
